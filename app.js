@@ -160,6 +160,15 @@ function loginWithAuthHash(baseUrl, authHash) {
   });
 }
 
+function getActiveSessionUserName(session) {
+  const currentUser = session.getCurrUser ? session.getCurrUser() : null;
+  return currentUser && currentUser.getName ? currentUser.getName() : "";
+}
+
+function hasActiveSession(session) {
+  return Boolean(session && session.getId && session.getId());
+}
+
 function updateDataFlags(session, specs) {
   return new Promise((resolve, reject) => {
     session.updateDataFlags(specs, (code) => {
@@ -197,14 +206,25 @@ function resolveWialonError(code) {
 }
 
 async function authenticate(sessionParams) {
+  const session = wialon.core.Session.getInstance();
+
+  // Reuse active SDK session to avoid reusing authHash on manual reloads.
+  if (hasActiveSession(session)) {
+    return {
+      sdkSession: session,
+      userName: sessionParams.user || getActiveSessionUserName(session) || "",
+      authMode: t("authModeHash"),
+    };
+  }
+
   if (!sessionParams.authHash) {
     throw new Error(sessionParams.sid ? t("authHashRequired") : t("missingParams"));
   }
 
-  const { session, user } = await loginWithAuthHash(sessionParams.baseUrl, sessionParams.authHash);
+  const { session: loggedSession, user } = await loginWithAuthHash(sessionParams.baseUrl, sessionParams.authHash);
 
   return {
-    sdkSession: session,
+    sdkSession: loggedSession,
     userName: sessionParams.user || (user && user.getName ? user.getName() : "") || "",
     authMode: t("authModeHash"),
   };
