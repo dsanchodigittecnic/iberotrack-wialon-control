@@ -215,7 +215,9 @@ async function callWialonBySid(baseUrl, sid, svc, params) {
   const payload = await response.json();
   if (payload && typeof payload.error !== "undefined") {
     if (payload.error === 1 || payload.error === 1003) {
-      throw new Error(t("invalidSid"));
+      const sidError = new Error(t("invalidSid"));
+      sidError.code = "INVALID_SID";
+      throw sidError;
     }
     throw new Error(`${t("requestError")} Code ${payload.error}`);
   }
@@ -274,6 +276,85 @@ async function authenticate(sessionParams) {
   };
 }
 
+async function fetchDriversViaSid(baseUrl, sid) {
+  const [resourcesRaw, unitsRaw] = await Promise.all([
+    callWialonBySid(baseUrl, sid, "core/search_items", {
+      spec: {
+        itemsType: "avl_resource",
+        propName: "drivers",
+        propValueMask: "*",
+        sortType: "sys_name",
+        propType: "propitemname",
+      },
+      force: 1,
+      flags: RESOURCE_DRIVERS_FLAG | 1,
+      from: 0,
+      to: 0,
+    }),
+    callWialonBySid(baseUrl, sid, "core/search_items", {
+      spec: {
+        itemsType: "avl_unit",
+        propName: "sys_name",
+        propValueMask: "*",
+        sortType: "sys_name",
+      },
+      force: 1,
+      flags: UNIT_BASE_FLAG,
+      from: 0,
+      to: 0,
+    }),
+  ]);
+
+  return {
+    resourcesResponse: resourcesRaw,
+    unitsById: new Map((unitsRaw.items || []).map((unit) => [String(unit.id), unit.nm || `${unit.id}`])),
+  };
+}
+
+async function fetchDriversViaSdk(session) {
+  session.loadLibrary("resourceDrivers");
+
+  await updateDataFlags(session, [
+    {
+      type: "type",
+      data: "avl_unit",
+      flags: UNIT_BASE_FLAG,
+      mode: 0,
+    },
+    {
+      type: "type",
+      data: "avl_resource",
+      flags: wialon.util.Number.or(
+        wialon.item.Item.dataFlag.base,
+        wialon.item.Resource.dataFlag.drivers,
+      ),
+      mode: 0,
+    },
+  ]);
+
+  const [resourcesSdk, units] = await Promise.all([
+    remoteCall("core/search_items", {
+      spec: {
+        itemsType: "avl_resource",
+        propName: "drivers",
+        propValueMask: "*",
+        sortType: "sys_name",
+        propType: "propitemname",
+      },
+      force: 1,
+      flags: RESOURCE_DRIVERS_FLAG | 1,
+      from: 0,
+      to: 0,
+    }),
+    Promise.resolve(session.getItems("avl_unit") || []),
+  ]);
+
+  return {
+    resourcesResponse: resourcesSdk,
+    unitsById: new Map(units.map((unit) => [String(unit.getId()), unit.getName()])),
+  };
+}
+
 async function loadDrivers() {
   state.session = parseSessionParams();
   state.locale = state.session.lang;
@@ -298,84 +379,35 @@ async function loadDrivers() {
 
   try {
     const auth = await authenticate(state.session);
-    state.session.user = auth.userName;
-    updateSessionSummary({ ...state.session, user: auth.userName }, auth.authMode);
-    let resourcesResponse;
-    let unitsById = new Map();
+    let activeAuth = auth;
+    let loadResult;
 
-    if (auth.transport === "sid") {
-      const [resourcesRaw, unitsRaw] = await Promise.all([
-        callWialonBySid(state.session.baseUrl, auth.sid, "core/search_items", {
-          spec: {
-            itemsType: "avl_resource",
-            propName: "drivers",
-            propValueMask: "*",
-            sortType: "sys_name",
-            propType: "propitemname",
-          },
-          force: 1,
-          flags: RESOURCE_DRIVERS_FLAG | 1,
-          from: 0,
-          to: 0,
-        }),
-        callWialonBySid(state.session.baseUrl, auth.sid, "core/search_items", {
-          spec: {
-            itemsType: "avl_unit",
-            propName: "sys_name",
-            propValueMask: "*",
-            sortType: "sys_name",
-          },
-          force: 1,
-          flags: UNIT_BASE_FLAG,
-          from: 0,
-          to: 0,
-        }),
-      ]);
-
-      resourcesResponse = resourcesRaw;
-      unitsById = new Map((unitsRaw.items || []).map((unit) => [String(unit.id), unit.nm || `${unit.id}`]));
-    } else {
-      const session = auth.sdkSession;
-      session.loadLibrary("resourceDrivers");
-
-      await updateDataFlags(session, [
-        {
-          type: "type",
-          data: "avl_unit",
-          flags: UNIT_BASE_FLAG,
-          mode: 0,
-        },
-        {
-          type: "type",
-          data: "avl_resource",
-          flags: wialon.util.Number.or(
-            wialon.item.Item.dataFlag.base,
-            wialon.item.Resource.dataFlag.drivers,
-          ),
-          mode: 0,
-        },
-      ]);
-
-      const [resourcesSdk, units] = await Promise.all([
-        remoteCall("core/search_items", {
-          spec: {
-            itemsType: "avl_resource",
-            propName: "drivers",
-            propValueMask: "*",
-            sortType: "sys_name",
-            propType: "propitemname",
-          },
-          force: 1,
-          flags: RESOURCE_DRIVERS_FLAG | 1,
-          from: 0,
-          to: 0,
-        }),
-        Promise.resolve(session.getItems("avl_unit") || []),
-      ]);
-
-      resourcesResponse = resourcesSdk;
-      unitsById = new Map(units.map((unit) => [String(unit.getId()), unit.getName()]));
+    try {
+      if (auth.transport === "sid") {
+        loadResult = await fetchDriversViaSid(state.session.baseUrl, auth.sid);
+      } else {
+        loadResult = await fetchDriversViaSdk(auth.sdkSession);
+      }
+    } catch (error) {
+      if (auth.transport === "sid" && error.code === "INVALID_SID" && state.session.authHash) {
+        const authFallback = await loginWithAuthHash(state.session.baseUrl, state.session.authHash);
+        activeAuth = {
+          sdkSession: authFallback.session,
+          userName: state.session.user || (authFallback.user && authFallback.user.getName ? authFallback.user.getName() : "") || "",
+          authMode: t("authModeHash"),
+          transport: "sdk",
+        };
+        loadResult = await fetchDriversViaSdk(activeAuth.sdkSession);
+      } else {
+        throw error;
+      }
     }
+
+    state.session.user = activeAuth.userName;
+    updateSessionSummary({ ...state.session, user: activeAuth.userName }, activeAuth.authMode);
+
+    const resourcesResponse = loadResult.resourcesResponse;
+    const unitsById = loadResult.unitsById;
 
     const drivers = flattenDrivers(resourcesResponse.items || [], unitsById);
 
