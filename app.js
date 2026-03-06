@@ -30,9 +30,11 @@ const translations = {
     noDescription: "No description",
     accountUser: "Account user",
     totalDrivers: "drivers loaded",
+    authModeSid: "Authenticated via SID",
     authModeHash: "Authenticated via authHash",
     requestError: "The Wialon request failed.",
     expiredAuthHash: "The authHash is invalid or expired. Generate a new one and open the app again within 2 minutes.",
+    invalidSid: "The SID is invalid or expired.",
   },
   es: {
     eyebrow: "Cuenta Wialon",
@@ -61,9 +63,11 @@ const translations = {
     noDescription: "Sin descripcion",
     accountUser: "Usuario de la cuenta",
     totalDrivers: "conductores cargados",
+    authModeSid: "Autenticado por SID",
     authModeHash: "Autenticado por authHash",
     requestError: "La peticion a Wialon fallo.",
     expiredAuthHash: "El authHash no es valido o ya caduco. Genera uno nuevo y abre la app otra vez dentro de 2 minutos.",
+    invalidSid: "El SID no es valido o ya caduco.",
   },
 };
 
@@ -193,10 +197,40 @@ function remoteCall(svc, params) {
   });
 }
 
+async function callWialonBySid(baseUrl, sid, svc, params) {
+  const url = new URL(`${baseUrl}/wialon/ajax.html`);
+  url.searchParams.set("svc", svc);
+  url.searchParams.set("params", JSON.stringify(params));
+  url.searchParams.set("sid", sid);
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`${t("requestError")} HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (payload && typeof payload.error !== "undefined") {
+    if (payload.error === 1 || payload.error === 1003) {
+      throw new Error(t("invalidSid"));
+    }
+    throw new Error(`${t("requestError")} Code ${payload.error}`);
+  }
+
+  return payload;
+}
+
 function resolveWialonError(code) {
   const sdkText = window.wialon && wialon.core && wialon.core.Errors
     ? wialon.core.Errors.getErrorText(code)
     : "";
+
+  if (sdkText && /invalid user name or password/i.test(sdkText)) {
+    return t("expiredAuthHash");
+  }
 
   if (code === 1 || code === 4 || code === 5 || code === 1003) {
     return t("expiredAuthHash");
@@ -217,8 +251,17 @@ async function authenticate(sessionParams) {
     };
   }
 
+  if (sessionParams.sid) {
+    return {
+      sid: sessionParams.sid,
+      userName: sessionParams.user || "",
+      authMode: t("authModeSid"),
+      transport: "sid",
+    };
+  }
+
   if (!sessionParams.authHash) {
-    throw new Error(sessionParams.sid ? t("authHashRequired") : t("missingParams"));
+    throw new Error(t("missingParams"));
   }
 
   const { session: loggedSession, user } = await loginWithAuthHash(sessionParams.baseUrl, sessionParams.authHash);
@@ -227,6 +270,7 @@ async function authenticate(sessionParams) {
     sdkSession: loggedSession,
     userName: sessionParams.user || (user && user.getName ? user.getName() : "") || "",
     authMode: t("authModeHash"),
+    transport: "sdk",
   };
 }
 
@@ -256,46 +300,83 @@ async function loadDrivers() {
     const auth = await authenticate(state.session);
     state.session.user = auth.userName;
     updateSessionSummary({ ...state.session, user: auth.userName }, auth.authMode);
+    let resourcesResponse;
+    let unitsById = new Map();
 
-    const session = auth.sdkSession;
-    session.loadLibrary("resourceDrivers");
+    if (auth.transport === "sid") {
+      const [resourcesRaw, unitsRaw] = await Promise.all([
+        callWialonBySid(state.session.baseUrl, auth.sid, "core/search_items", {
+          spec: {
+            itemsType: "avl_resource",
+            propName: "drivers",
+            propValueMask: "*",
+            sortType: "sys_name",
+            propType: "propitemname",
+          },
+          force: 1,
+          flags: RESOURCE_DRIVERS_FLAG | 1,
+          from: 0,
+          to: 0,
+        }),
+        callWialonBySid(state.session.baseUrl, auth.sid, "core/search_items", {
+          spec: {
+            itemsType: "avl_unit",
+            propName: "sys_name",
+            propValueMask: "*",
+            sortType: "sys_name",
+          },
+          force: 1,
+          flags: UNIT_BASE_FLAG,
+          from: 0,
+          to: 0,
+        }),
+      ]);
 
-    await updateDataFlags(session, [
-      {
-        type: "type",
-        data: "avl_unit",
-        flags: UNIT_BASE_FLAG,
-        mode: 0,
-      },
-      {
-        type: "type",
-        data: "avl_resource",
-        flags: wialon.util.Number.or(
-          wialon.item.Item.dataFlag.base,
-          wialon.item.Resource.dataFlag.drivers,
-        ),
-        mode: 0,
-      },
-    ]);
+      resourcesResponse = resourcesRaw;
+      unitsById = new Map((unitsRaw.items || []).map((unit) => [String(unit.id), unit.nm || `${unit.id}`]));
+    } else {
+      const session = auth.sdkSession;
+      session.loadLibrary("resourceDrivers");
 
-    const [resourcesResponse, units] = await Promise.all([
-      remoteCall("core/search_items", {
-        spec: {
-          itemsType: "avl_resource",
-          propName: "drivers",
-          propValueMask: "*",
-          sortType: "sys_name",
-          propType: "propitemname",
+      await updateDataFlags(session, [
+        {
+          type: "type",
+          data: "avl_unit",
+          flags: UNIT_BASE_FLAG,
+          mode: 0,
         },
-        force: 1,
-        flags: RESOURCE_DRIVERS_FLAG | 1,
-        from: 0,
-        to: 0,
-      }),
-      Promise.resolve(session.getItems("avl_unit") || []),
-    ]);
+        {
+          type: "type",
+          data: "avl_resource",
+          flags: wialon.util.Number.or(
+            wialon.item.Item.dataFlag.base,
+            wialon.item.Resource.dataFlag.drivers,
+          ),
+          mode: 0,
+        },
+      ]);
 
-    const unitsById = new Map(units.map((unit) => [String(unit.getId()), unit.getName()]));
+      const [resourcesSdk, units] = await Promise.all([
+        remoteCall("core/search_items", {
+          spec: {
+            itemsType: "avl_resource",
+            propName: "drivers",
+            propValueMask: "*",
+            sortType: "sys_name",
+            propType: "propitemname",
+          },
+          force: 1,
+          flags: RESOURCE_DRIVERS_FLAG | 1,
+          from: 0,
+          to: 0,
+        }),
+        Promise.resolve(session.getItems("avl_unit") || []),
+      ]);
+
+      resourcesResponse = resourcesSdk;
+      unitsById = new Map(units.map((unit) => [String(unit.getId()), unit.getName()]));
+    }
+
     const drivers = flattenDrivers(resourcesResponse.items || [], unitsById);
 
     renderDrivers(drivers);
