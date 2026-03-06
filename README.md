@@ -1,33 +1,25 @@
 ﻿# Wialon Drivers App
 
-Aplicacion estatica para Wialon que lee los parametros de la URL y muestra los conductores disponibles en cards.
+Aplicacion estatica para Wialon publicada en GitHub Pages usando el SDK oficial `wialon.js`.
 
 ## Parametros soportados
 
-- `sid`
-- `authHash`
-- `baseUrl`
-- `hostUrl`
+- `authHash` obligatorio para la version publicada
+- `baseUrl` opcional, por defecto `https://hst-api.wialon.com`
 - `user`
 - `lang`
 - `b`
 - `v`
+- `sid` solo informativo en esta version
 
-## Ejemplo de uso
+## URL recomendada
 
 ```text
-index.html?sid=026085dce21dcf6120bcfa1d922fda20&b=stable&authHash=0135c58bd6702db42c962e0126f00ebd&hostUrl=https%3A%2F%2Fcms.wialon.com&user=AliceNorris&v=1.51&baseUrl=https%3A%2F%2Fhst-api.wialon.com&lang=en
+https://dsanchodigittecnic.github.io/iberotrack-wialon-control/index.html?authHash=AUTH_HASH_RECIENTE&user=davidsancho4%40gmail.com&b=stable&v=1.51&baseUrl=https%3A%2F%2Fhst-api.wialon.com&lang=es
 ```
 
-## Que hace
+## Notas importantes
 
-1. Toma la sesion desde `sid` o, si no existe, intenta autenticarse con `authHash`.
-2. Consulta los recursos `avl_resource` que tienen conductores (`drvrs`).
-3. Consulta las unidades para mostrar el nombre de la unidad asignada a cada conductor.
-4. Renderiza cada conductor en una card responsive.
-
-## Archivos
-
-- `index.html`
-- `styles.css`
-- `app.js`
+1. `authHash` caduca rapido en Wialon. Debes abrir la app poco despues de generarlo.
+2. Esta version evita `fetch` directo al Remote API y usa el SDK oficial para funcionar mejor en navegador.
+3. Si el hash ha caducado, la app muestra un error claro y no intentara usar solo `sid`.

@@ -1,6 +1,5 @@
 ﻿const DEFAULT_BASE_URL = "https://hst-api.wialon.com";
 const RESOURCE_DRIVERS_FLAG = 256;
-const RESOURCE_BASE_FLAG = 1;
 const UNIT_BASE_FLAG = 1;
 
 const translations = {
@@ -16,7 +15,9 @@ const translations = {
     reload: "Reload",
     loading: "Loading drivers from Wialon...",
     noDrivers: "No drivers were found in the accessible resources for this account.",
-    missingParams: "Missing Wialon parameters. Open the app with at least sid or authHash, plus baseUrl.",
+    missingParams: "Missing Wialon parameters. Use a fresh authHash and optionally baseUrl.",
+    authHashRequired: "This published app uses the official Wialon SDK and requires a fresh authHash. SID alone is not enough here.",
+    sdkMissing: "The Wialon SDK did not load.",
     source: "Resource",
     unit: "Assigned unit",
     phone: "Phone",
@@ -29,14 +30,14 @@ const translations = {
     noDescription: "No description",
     accountUser: "Account user",
     totalDrivers: "drivers loaded",
-    authModeSid: "Authenticated via SID",
     authModeHash: "Authenticated via authHash",
     requestError: "The Wialon request failed.",
+    expiredAuthHash: "The authHash is invalid or expired. Generate a new one and open the app again within 2 minutes.",
   },
   es: {
     eyebrow: "Cuenta Wialon",
     title: "Conductores",
-    subtitle: "Cargando el contexto de la cuenta desde los parámetros de la URL.",
+    subtitle: "Cargando el contexto de la cuenta desde los parametros de la URL.",
     session: "Sesion",
     unknownUser: "Usuario desconocido",
     noHost: "Sin host configurado",
@@ -45,7 +46,9 @@ const translations = {
     reload: "Recargar",
     loading: "Cargando conductores desde Wialon...",
     noDrivers: "No se encontraron conductores en los recursos accesibles de esta cuenta.",
-    missingParams: "Faltan parametros de Wialon. Abre la app con al menos sid o authHash, ademas de baseUrl.",
+    missingParams: "Faltan parametros de Wialon. Usa un authHash reciente y opcionalmente baseUrl.",
+    authHashRequired: "Esta app publicada usa el SDK oficial de Wialon y necesita un authHash reciente. Solo con SID no basta aqui.",
+    sdkMissing: "No se pudo cargar el SDK de Wialon.",
     source: "Recurso",
     unit: "Unidad asignada",
     phone: "Telefono",
@@ -58,9 +61,9 @@ const translations = {
     noDescription: "Sin descripcion",
     accountUser: "Usuario de la cuenta",
     totalDrivers: "conductores cargados",
-    authModeSid: "Autenticado por SID",
     authModeHash: "Autenticado por authHash",
     requestError: "La peticion a Wialon fallo.",
+    expiredAuthHash: "El authHash no es valido o ya caduco. Genera uno nuevo y abre la app otra vez dentro de 2 minutos.",
   },
 };
 
@@ -87,7 +90,7 @@ const state = {
 function parseSessionParams() {
   const params = new URLSearchParams(window.location.search);
   const lang = (params.get("lang") || "en").toLowerCase().startsWith("es") ? "es" : "en";
-  const baseUrl = sanitizeBaseUrl(params.get("baseUrl") || params.get("hostUrl") || DEFAULT_BASE_URL);
+  const baseUrl = sanitizeBaseUrl(params.get("baseUrl") || DEFAULT_BASE_URL);
 
   return {
     sid: params.get("sid") || "",
@@ -135,56 +138,74 @@ function updateSessionSummary(session, authMode) {
   dom.sessionLabel.textContent = authMode;
 }
 
-async function callWialon(baseUrl, sid, svc, params) {
-  const url = new URL(`${baseUrl}/wialon/ajax.html`);
-  url.searchParams.set("svc", svc);
-  url.searchParams.set("params", JSON.stringify(params));
-
-  if (sid) {
-    url.searchParams.set("sid", sid);
+function requireSdk() {
+  if (!window.wialon || !window.wialon.core || !window.wialon.core.Session) {
+    throw new Error(t("sdkMissing"));
   }
-
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`${t("requestError")} HTTP ${response.status}`);
-  }
-
-  const payload = await response.json();
-
-  if (payload && typeof payload.error !== "undefined") {
-    throw new Error(`${t("requestError")} Code ${payload.error}`);
-  }
-
-  return payload;
 }
 
-async function ensureSession(session) {
-  if (session.sid) {
-    return {
-      ...session,
-      sid: session.sid,
-      authMode: t("authModeSid"),
-    };
-  }
+function loginWithAuthHash(baseUrl, authHash) {
+  return new Promise((resolve, reject) => {
+    const session = wialon.core.Session.getInstance();
+    session.initSession(baseUrl);
+    session.loginAuthHash(authHash, (code) => {
+      if (code) {
+        reject(new Error(resolveWialonError(code)));
+        return;
+      }
 
-  if (!session.authHash) {
-    throw new Error(t("missingParams"));
-  }
-
-  const authResult = await callWialon(session.baseUrl, "", "core/use_auth_hash", {
-    authHash: session.authHash,
+      const user = session.getCurrUser();
+      resolve({ session, user });
+    });
   });
+}
+
+function updateDataFlags(session, specs) {
+  return new Promise((resolve, reject) => {
+    session.updateDataFlags(specs, (code) => {
+      if (code) {
+        reject(new Error(resolveWialonError(code)));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function remoteCall(svc, params) {
+  return new Promise((resolve, reject) => {
+    wialon.core.Remote.getInstance().remoteCall(svc, params, (code, data) => {
+      if (code) {
+        reject(new Error(resolveWialonError(code)));
+        return;
+      }
+      resolve(data);
+    });
+  });
+}
+
+function resolveWialonError(code) {
+  const sdkText = window.wialon && wialon.core && wialon.core.Errors
+    ? wialon.core.Errors.getErrorText(code)
+    : "";
+
+  if (code === 1 || code === 4 || code === 5 || code === 1003) {
+    return t("expiredAuthHash");
+  }
+
+  return sdkText || `${t("requestError")} Code ${code}`;
+}
+
+async function authenticate(sessionParams) {
+  if (!sessionParams.authHash) {
+    throw new Error(sessionParams.sid ? t("authHashRequired") : t("missingParams"));
+  }
+
+  const { session, user } = await loginWithAuthHash(sessionParams.baseUrl, sessionParams.authHash);
 
   return {
-    ...session,
-    sid: authResult.eid,
-    user: session.user || (authResult.user && authResult.user.nm) || "",
+    sdkSession: session,
+    userName: sessionParams.user || (user && user.getName ? user.getName() : "") || "",
     authMode: t("authModeHash"),
   };
 }
@@ -193,24 +214,52 @@ async function loadDrivers() {
   state.session = parseSessionParams();
   state.locale = state.session.lang;
   applyStaticCopy();
+  dom.driversGrid.innerHTML = "";
 
-  if (!state.session.baseUrl || (!state.session.sid && !state.session.authHash)) {
+  try {
+    requireSdk();
+  } catch (error) {
+    showStatus(error.message, "error");
+    updateSessionSummary(state.session, t("session"));
+    return;
+  }
+
+  if (!state.session.authHash && !state.session.sid) {
     showStatus(t("missingParams"), "warning");
-    dom.driversGrid.innerHTML = "";
     updateSessionSummary(state.session, t("session"));
     return;
   }
 
   showStatus(t("loading"), "info");
-  dom.driversGrid.innerHTML = "";
 
   try {
-    const session = await ensureSession(state.session);
-    state.session = session;
-    updateSessionSummary(session, session.authMode);
+    const auth = await authenticate(state.session);
+    state.session.user = auth.userName;
+    updateSessionSummary({ ...state.session, user: auth.userName }, auth.authMode);
 
-    const [resourcesResponse, unitsResponse] = await Promise.all([
-      callWialon(session.baseUrl, session.sid, "core/search_items", {
+    const session = auth.sdkSession;
+    session.loadLibrary("resourceDrivers");
+
+    await updateDataFlags(session, [
+      {
+        type: "type",
+        data: "avl_unit",
+        flags: UNIT_BASE_FLAG,
+        mode: 0,
+      },
+      {
+        type: "type",
+        data: "avl_resource",
+        flags: wialon.util.Number.or(
+          wialon.item.Item.dataFlag.base,
+          wialon.item.Resource.dataFlag.drivers,
+        ),
+        mode: 0,
+      },
+    ]);
+
+    const [resourcesResponse, units] = await Promise.all([
+      remoteCall("core/search_items", {
         spec: {
           itemsType: "avl_resource",
           propName: "drivers",
@@ -219,28 +268,14 @@ async function loadDrivers() {
           propType: "propitemname",
         },
         force: 1,
-        flags: RESOURCE_BASE_FLAG | RESOURCE_DRIVERS_FLAG,
+        flags: RESOURCE_DRIVERS_FLAG | 1,
         from: 0,
         to: 0,
       }),
-      callWialon(session.baseUrl, session.sid, "core/search_items", {
-        spec: {
-          itemsType: "avl_unit",
-          propName: "sys_name",
-          propValueMask: "*",
-          sortType: "sys_name",
-        },
-        force: 1,
-        flags: UNIT_BASE_FLAG,
-        from: 0,
-        to: 0,
-      }),
+      Promise.resolve(session.getItems("avl_unit") || []),
     ]);
 
-    const unitsById = new Map(
-      (unitsResponse.items || []).map((unit) => [String(unit.id), unit.nm || `${unit.id}`]),
-    );
-
+    const unitsById = new Map(units.map((unit) => [String(unit.getId()), unit.getName()]));
     const drivers = flattenDrivers(resourcesResponse.items || [], unitsById);
 
     renderDrivers(drivers);
@@ -283,7 +318,6 @@ function renderDrivers(drivers) {
     .sort((left, right) => left.name.localeCompare(right.name))
     .forEach((driver) => {
       const node = dom.template.content.cloneNode(true);
-      const card = node.querySelector(".driver-card");
       const avatar = node.querySelector(".driver-avatar");
       const name = node.querySelector(".driver-name");
       const meta = node.querySelector(".driver-meta");
@@ -303,7 +337,6 @@ function renderDrivers(drivers) {
       details.appendChild(createDetailRow(t("code"), driver.code || t("noCode")));
       details.appendChild(createDetailRow(t("description"), driver.description || t("noDescription")));
 
-      card.dataset.driverId = driver.id;
       fragment.appendChild(node);
     });
 
@@ -346,5 +379,3 @@ dom.refreshButton.addEventListener("click", () => {
 });
 
 loadDrivers();
-
-
