@@ -1,0 +1,57 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wialon Drivers</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow" id="eyebrow">Wialon account</p>
+        <h1 id="title">Drivers</h1>
+        <p class="subtitle" id="subtitle">Loading the account context from the URL parameters.</p>
+      </div>
+      <div class="session-card">
+        <span class="session-label" id="session-label">Session</span>
+        <strong id="session-user">Unknown user</strong>
+        <span id="session-host">No host configured</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="toolbar">
+        <div class="toolbar-copy">
+          <h2 id="section-title">Available drivers</h2>
+          <p id="section-subtitle">Resources with driver records available for the authenticated session.</p>
+        </div>
+        <button class="refresh-button" id="refresh-button" type="button">Reload</button>
+      </section>
+
+      <section id="status-panel" class="status-panel status-panel--info"></section>
+      <section id="drivers-grid" class="drivers-grid" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <template id="driver-card-template">
+    <article class="driver-card">
+      <div class="driver-card__head">
+        <div class="driver-avatar"></div>
+        <div>
+          <h3 class="driver-name"></h3>
+          <p class="driver-meta"></p>
+        </div>
+      </div>
+      <div class="driver-badges"></div>
+      <dl class="driver-details"></dl>
+    </article>
+  </template>
+
+  <script src="./app.js"></script>
+</body>
+</html>
